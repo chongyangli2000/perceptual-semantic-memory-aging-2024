@@ -1,0 +1,628 @@
+---
+title: "Target_foil_choosing"
+author: 'A'
+date: "2024-05-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(readxl)
+library(janitor)
+library(naniar)
+library(plotly)
+library(openxlsx)
+library(knitr)
+library(gridExtra)
+library(bmp)
+library(grid)
+library(magick)
+library(fs)
+library(stringr)
+library(writexl)
+library(tidyverse)
+```
+
+# Reading the data
+```{r, message=FALSE}
+# Define the path to your Excel file
+file_path <- "Final_Postscaling_Matrices19.xls"
+
+# List all sheet names in the Excel file
+sheet_names <- excel_sheets(file_path)
+
+# Read each sheet into a list of data frames
+all_sheets <- lapply(sheet_names, function(sheet) {
+  read_excel(file_path, sheet = sheet)
+})
+
+# Name the list elements with the sheet names
+names(all_sheets) <- sheet_names
+
+# Print the names of the sheets and the first few rows of each sheet to verify
+print(names(all_sheets))
+
+```
+# Tidying the data 
+```{r}
+# Function to move column names to the first row and rename columns sequentially
+move_colnames_to_first_row <- function(df) {
+  
+  
+  # Combine the new row with the original data frame
+  new_df <- rbind(colnames(df), df)
+  
+  # Rename columns sequentially
+  colnames(new_df) <- seq_len(ncol(new_df))
+
+  return(new_df)
+}
+
+# Apply the function to each sheet
+clean_sheets <- lapply(all_sheets, move_colnames_to_first_row)
+
+# Name the list elements with the sheet names for reference
+names(clean_sheets) <- sheet_names
+
+```
+
+# Getting the bottom left parts only
+```{r, message=FALSE}
+# Function to process each matrix
+process_matrix <- function(df) {
+  # Convert data frame to numeric matrix
+  mat <- as.matrix(sapply(df, as.numeric))
+  
+  n <- nrow(mat)
+  m <- ncol(mat)
+  
+  # Iterate over each element of the matrix
+  for (i in 1:n) {
+    for (j in 1:m) {
+      if (i <= j) {
+        mat[i, j] <- 0
+      }
+    }
+  }
+  
+  # Convert matrix back to data frame
+  processed_df <- as.data.frame(mat)
+  
+  return(processed_df)
+}
+# Apply the process_matrix function to each processed sheet
+final_processed_sheets <- lapply(clean_sheets, process_matrix)
+
+# Name the list elements with the sheet names for reference
+names(final_processed_sheets) <- sheet_names
+
+```
+# Putting all the sheets in one table (long format)
+```{r}
+# Combine all processed data frames into one long-format data frame for plotting
+long_data <- bind_rows(lapply(final_processed_sheets, function(df) {
+  df_long <- df %>%
+    mutate(Row = row_number()) %>%
+    pivot_longer(cols = -Row, names_to = "Column", values_to = "Value") %>%
+    filter(Value != 0)
+  return(df_long)
+}), .id = "Sheet")
+
+# Print the combined long-format data for verification
+glimpse(long_data)
+```
+# Missing Data?
+```{r}
+gg_miss_var(long_data) # missing data?
+```
+# Visualising DI
+```{r}
+# Create a histogram based on all the DI values 
+ggplot(long_data, aes(x = Value)) +
+  geom_histogram(binwidth = 2) +
+  theme_minimal() +
+  scale_x_continuous(name = "DI") +
+  scale_y_continuous("Frequecy in Whole Dataset")
+
+```
+
+# Choosing Potential Triplets 
+
+## Standardizing Image Filenames
+
+```{r}
+# the image files are not named in a consistent way (some start with upper case while other start with lower ones)
+
+# Function to standardize filenames
+standardize_filenames <- function(directory) {
+  # Get a list of all files in the directory
+  files <- dir_ls(directory)
+  
+  # Iterate over each file
+  for (file in files) {
+    # Extract the filename without the extension
+    filename <- path_file(file)
+    file_ext <- path_ext(file)
+    filename_without_ext <- str_remove(filename, paste0(".", file_ext, "$"))
+    
+    # Convert to lowercase and replace hyphens with underscores
+    new_filename <- tolower(filename_without_ext) %>%
+      str_replace_all("-", "") 
+    
+    # special cases to rename
+    
+   #new_filename <- str_replace(new_filename, "choc", "chocolate")
+   #new_filename <- str_replace(new_filename, "keywindow", "windowkey")
+  #new_filename <- str_replace(new_filename, "carmodel", "carclassic")
+   #new_filename <- str_replace(new_filename, "broc", "brocolli")
+   #new_filename <- str_replace(new_filename, "gingerbread", "gingerbreadman")
+   #new_filename <- str_replace(new_filename, "keys", "keybunch")
+   #new_filename <- str_replace(new_filename, "carclassic", "carmodel")
+   #new_filename <- str_replace(new_filename, "carmodel", "modelcar")
+   #new_filename <- str_replace(new_filename, "classiccar", "carclassic")
+   #new_filename <- str_replace(new_filename, "tooth", "toothbrush")
+   
+   
+    # Add the extension back
+    new_filename <- paste0(new_filename, ".", file_ext)
+    
+    # Rename the file
+    file_move(file, path(directory, new_filename))
+  }
+}
+
+# Apply the function to the "Images A-D" folder
+standardize_filenames("Images A-D")
+
+```
+
+## Category Exclusion
+
+```{r}
+long_data <- long_data %>% filter(!Sheet %in% c("Bigcar",
+                                                "Dollshouse",
+                                                "Tree",
+                                                "Trousers",
+                                                "Trunk",
+                                                "Turtle",
+                                                "Tyre",
+                                                "Umbrella",
+                                                "Varnish",
+                                                "Veg",
+                                                "Watch",
+                                                
+                                                "Dolls",
+                                                "Gift",
+                                                "Present",
+                                                "Scissors",
+                                                "Train",
+                                                "Watermelon")) %>%
+mutate(Sheet = recode(Sheet, "Scissorssaftey" = "Scissorssafety"))
+```
+
+## Stimuli Choosing Function
+```{r}
+# here i am choosing triplets based on our criteria: a) fixed DI b) DI between foil number two and target must be double the fixed DI. 
+
+# This part of code first focus on every row in each matrix (already turned into long format, but still the row in the original sheets), picking out DI values that meet our fixed DI with acc range. Then, every time when there is such DI, checking if there is another value within the row which has double the DI (within the row, because in the matrices, each row means comparing this item that the row represents to other items. by doing this, we just test whether the item that each row represents is able to be the target).
+
+filter_sheets <- function(long_data) {
+  selected_rows <- data.frame()
+  
+  # Iterate over each sheet
+  for (sheet_name in unique(long_data$Sheet)) {
+    sheet_data <- long_data %>% filter(Sheet == sheet_name)
+    
+    # Iterate over each row
+    for (row_number in unique(sheet_data$Row)) {
+      row_data <- sheet_data %>% filter(Row == row_number)
+      
+      # Check for the criteria in rows
+      for (i in 1:nrow(row_data)) {
+        value_i <- row_data$Value[i]
+        if (value_i >= DI - acceptable_range & value_i <= DI + acceptable_range) {
+          
+          # Find other values within the range in the same row
+          matches_row <- row_data %>% filter(Value >= doubled_DI_lower & Value <= doubled_DI_upper ) # & abs(Value - value_i - DI) <= acceptable_range
+          
+          if (nrow(matches_row) >= 1) {
+            for (j in 1:nrow(matches_row)) {
+              selected_rows <- rbind(selected_rows, data.frame(
+                Sheet = sheet_name,
+                Row = row_number,
+                Value = value_i,
+                Column = row_data$Column[i],
+                MatchingRow = matches_row$Row[j],
+                MatchingValue = matches_row$Value[j],
+                MatchingColumn = matches_row$Column[j],
+                MatchType = "Row"
+              ))
+            }
+          }
+        }
+      }
+    }
+    
+    # Iterate over each column
+    for (col_number in unique(sheet_data$Column)) {
+      col_data <- sheet_data %>% filter(Column == col_number)
+      
+      # Check for the criteria in columns
+      for (i in 1:nrow(col_data)) {
+        value_i <- col_data$Value[i]
+        if (value_i >= DI - acceptable_range & value_i <= DI + acceptable_range) {
+          
+          # Find other values within the range in the same column
+          matches_col <- col_data %>% filter(Value >= doubled_DI_lower & Value <= doubled_DI_upper ) # & abs(Value - value_i - DI) <= acceptable_range
+          
+          if (nrow(matches_col) >= 1) {
+            for (j in 1:nrow(matches_col)) {
+              selected_rows <- rbind(selected_rows, data.frame(
+                Sheet = sheet_name,
+                Row = col_data$Row[i],
+                Value = value_i,
+                Column = col_number,
+                MatchingRow = matches_col$Row[j],
+                MatchingValue = matches_col$Value[j],
+                MatchingColumn = matches_col$Column[j],
+                MatchType = "Column"
+              ))
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return(selected_rows)
+}
+```
+
+## Pilot study
+
+### 1000 DI with 200 acceptable range
+```{r}
+
+DI = 1000
+acceptable_range = 200
+
+double_DI = 2 * DI
+doubled_DI_lower <- double_DI - acceptable_range
+doubled_DI_upper <- double_DI + acceptable_range
+
+# Apply the function to the long data
+filtered_data <- filter_sheets(long_data)
+```
+
+#### Tidying the triplet output
+```{r}
+#tidy the column names a bit
+column_as_target <- filtered_data %>% 
+  filter(MatchType == "Column") %>%
+  select(c(Sheet, Column, Row, Value, MatchingRow, MatchingValue, MatchType)) %>%
+  rename(Target = Column,
+         Foil_1 = Row,
+         DI_1 = Value,
+         Foil_2 = MatchingRow,
+         DI_2 = MatchingValue) %>%
+  mutate(DI_1 = round(DI_1),
+         DI_2 = round(DI_2)) %>%
+  mutate(across(Target : DI_2, as.numeric))
+
+
+row_as_target <- filtered_data %>%
+  filter(MatchType == "Row") %>%
+  select(c(Sheet, Row, Column, Value, MatchingColumn, MatchingValue, MatchType)) %>%
+  rename(Target = Row,
+         Foil_1 = Column,
+         DI_1 = Value,
+         Foil_2 = MatchingColumn,
+         DI_2 = MatchingValue)%>%
+  mutate(DI_1 = round(DI_1),
+         DI_2 = round(DI_2)) %>%
+  mutate(across(Target : DI_2, as.numeric))
+
+
+clean_flitered_data <- rbind(column_as_target, row_as_target) %>% arrange(Sheet) %>% rename(Category = Sheet)
+ 
+# Print the filtered data
+head(clean_flitered_data)
+```
+
+
+```{r}
+usable_triplet_list <- clean_flitered_data %>% select(-MatchType)
+
+glimpse(usable_triplet_list)
+
+#write.xlsx(usable_triplet_list, 'usable_triplet_list_1000_2000_100.xlsx')
+```
+
+```{r}
+triplet_summerisation <- usable_triplet_list %>% group_by(Category) %>% count() %>% rename(num_of_triplets = n)
+
+triplet_summerisation
+```
+
+####  Visualising potential triplet for each category
+```{r}
+# visualisation of numbers of triplets
+
+triplet_summerisation <- triplet_summerisation %>% mutate(Category = fct_reorder(Category, num_of_triplets))
+
+num_of_triplets_bar <- plot_ly(x = triplet_summerisation$Category, y = triplet_summerisation$num_of_triplets,
+        type = "bar") 
+
+num_of_triplets_bar <- num_of_triplets_bar %>% layout(title = "Number of Potential Triplets for Each Category",
+                                                      xaxis = list(title = "Category",
+                                                                   tickangle = -45,
+                                                                  tickfont = list(size = 5),
+                                                                  categoryorder = "total descending")) 
+num_of_triplets_bar
+```
+
+
+#### Selected Triplets
+```{r}
+# Sampling triplets from all usable triplets
+set.seed(9999)
+selected_triplets <- usable_triplet_list %>% 
+  filter(abs(DI_1 - DI) < 100 & abs(DI_2 - double_DI) < 100) %>% 
+  group_by(Category) %>% sample_n(1) %>% 
+  ungroup() 
+
+if (nrow(selected_triplets) > 90) {
+  selected_triplets <- selected_triplets %>% sample_n(90)
+}
+
+# Get remaining triplets excluding already selected categories
+  remaining_triplet_list <- usable_triplet_list %>% 
+    filter(!Category %in% selected_triplets$Category)
+
+while (nrow(selected_triplets) < 90) {
+  # Calculate the absolute distances
+  remaining_triplet_list <- remaining_triplet_list %>% 
+    mutate(absDI_1 = abs(DI_1 - DI),
+           absDI_2 = abs(DI_2 - double_DI),
+           absdis = absDI_1 + absDI_2) %>% 
+    arrange(absdis)
+  
+  # Select the triplet with the smallest absolute distance
+  best_triplet <- remaining_triplet_list %>% slice(1)
+  
+  # Add the best triplet to the selected_triplets
+  selected_triplets <- bind_rows(selected_triplets, best_triplet)
+  
+  # Get remaining triplets excluding already selected categories
+  remaining_triplet_list <- usable_triplet_list %>% 
+    filter(!Category %in% selected_triplets$Category)
+}
+
+# Print the selected triplets
+print(selected_triplets)
+
+kable(selected_triplets)
+
+#write.xlsx(selected_triplets, "pilot_stimuli.xlsx")
+```
+
+
+#### Visualising DIs for selected triplets
+```{r}
+hist(selected_triplets$DI_2)
+mean(selected_triplets$DI_2)
+
+hist(selected_triplets$DI_1)
+mean(selected_triplets$DI_1)
+```
+
+#### Randomising Stimuli Order
+
+```{r}
+check_condition <- function(retrieval_list) {
+  for (i in 1:(nrow(retrieval_list) - 3)) {
+    current_category <- strsplit(retrieval_list$Stimulus[i], "_")[[1]][1]
+    for (j in (i+1):(i+3)) {
+      next_category <- strsplit(retrieval_list$Stimulus[j], "_")[[1]][1]
+      if (next_category == current_category) {
+        return(FALSE)
+      }
+    }
+  }
+  return(TRUE)
+}
+
+# Define the custom shuffle function
+randomize_retrieval_list <- function(retrieval_list) {
+  repeat {
+    shuffled_list <- retrieval_list %>% sample_frac(1)
+    if (check_condition(shuffled_list)) {
+      return(shuffled_list)
+    }
+  }
+}
+```
+
+
+```{r}
+# Function to generate the lists
+generate_lists_for_participants <- function(stimuli_list, num_participants) {
+  encoding_lists <- list()
+  retrieval_lists <- list()
+  
+  for (i in 1:num_participants) {
+    set.seed(9999 + i)  # Setting a unique seed for each participant
+
+    # Encoding list
+    encoding_list <- stimuli_list %>% select(Target) %>%
+      mutate(ID = seq(1, 90),
+             Weight = "1",
+             Procedure = "TrialEncoding") %>% 
+      rename(Stimulus = Target) %>%
+      sample_frac(1)
+
+    # Retrieval list
+    retrieval_list <- stimuli_list %>% select(c(Target, Foil1, Foil2))
+    retrieval_list <- as_tibble(c(retrieval_list$Target, retrieval_list$Foil1, retrieval_list$Foil2)) %>%
+      mutate(ID = seq(1, 270),
+             Weight = "1",
+             Procedure = "RecognitionTrial") %>%
+      rename(Stimulus = value) 
+    
+    # Randomize retrieval list to meet the condition
+    randomized_retrieval_list <- randomize_retrieval_list(retrieval_list)
+    
+    randomized_retrieval_list_1 <- randomized_retrieval_list %>% slice(1:135)
+    
+    randomized_retrieval_list_2 <- randomized_retrieval_list %>% slice(136:270)
+
+    # Store the lists
+    encoding_lists[[paste0("Participant_", i)]] <- encoding_list
+    retrieval_lists[[paste0("Participant_", i, "_", "1")]] <- randomized_retrieval_list_1
+    retrieval_lists[[paste0("Participant_", i, "_", "2")]] <- randomized_retrieval_list_2
+  }
+  
+  return(list(encoding_lists = encoding_lists, retrieval_lists = retrieval_lists))
+}
+
+# Your stimuli_list
+stimuli_list <- selected_triplets %>%
+  mutate(
+    Target = paste0("images/", tolower(Category), "_", Target, ".bmp"),
+    Foil1 = paste0("images/", tolower(Category), "_", Foil_1, ".bmp"),
+    Foil2 = paste0("images/", tolower(Category), "_", Foil_2, ".bmp")
+  ) %>% 
+  select(Target, Foil1, Foil2, DI_1, DI_2)
+
+# Generate lists for 30 participants
+num_participants <- 65
+lists <- generate_lists_for_participants(stimuli_list, num_participants)
+
+# Save encoding lists to an Excel file
+#write_xlsx(lists$encoding_lists, "encoding_lists.xlsx")
+
+# Save retrieval lists to an Excel file
+#write_xlsx(lists$retrieval_lists, "retrieval_lists.xlsx")
+
+
+# Print the top few lists to check
+print(lists$encoding_lists[[1]])
+print(lists$retrieval_lists[[1]])
+print(lists$encoding_lists[[2]])
+print(lists$retrieval_lists[[2]])
+print(lists$encoding_lists[[3]])
+print(lists$retrieval_lists[[3]])
+
+```
+
+
+
+#### Put Stimuli in Folders
+```{r}
+source_dir <- "Images A-D"  # Adjust this path as necessary
+dest_dir <- "Task"
+
+# Create the destination directory if it doesn't exist
+if (!dir.exists(dest_dir)) {
+  dir.create(dest_dir)
+}
+
+# Function to copy files to the new directory
+copy_files <- function(file_name) {
+  file_path <- file.path(source_dir, file_name)
+  if (file.exists(file_path)) {
+    file.copy(file_path, dest_dir)
+  } else {
+    warning(paste("File not found:", file_path))
+  }
+}
+
+lapply(retrieval_list$Stimulus, copy_files)
+
+
+dest_dir <- "Practice"
+if (!dir.exists(dest_dir)) {
+  dir.create(dest_dir)
+}
+
+lapply(retrieval_prac$Stimulus, copy_files)
+```
+#### Make E-Prime readable lists
+```{r}
+Encoding <- mutate(encoding_list,
+                   Stimulus = paste0("Task/", Stimulus))
+Retrieval <- mutate(retrieval_list,
+                    Stimulus = paste0("Task/", Stimulus))
+
+Encoding_prac <- mutate(encoding_prac,
+                        Stimulus = paste0("Practice/", Stimulus))
+
+Retrieval_prac <- mutate(retrieval_prac,
+                        Stimulus = paste0("Practice/", Stimulus))
+
+#write.xlsx(Encoding, "encoding.xlsx")
+#write.xlsx(Retrieval, "retrieval.xlsx")
+#write.xlsx(Encoding_prac, "encoding_prac.xlsx")
+#write.xlsx(Retrieval_prac, "retrieval_prac.xlsx")
+```
+#### Image List
+```{r}
+# Function to create the presentable table with image paths
+create_presentable_table <- function(selected_triplets) {
+  presentable_table <- selected_triplets %>%
+    mutate(
+      Target = paste0(tolower(Category), "_", Target),
+      Foil1 = paste0(tolower(Category), "_", Foil_1),
+      Foil2 = paste0(tolower(Category), "_", Foil_2),
+      TargetPath = paste0("Images A-D/", Target, ".bmp"),
+      Foil1Path = paste0("Images A-D/", Foil1, ".bmp"),
+      Foil2Path = paste0("Images A-D/", Foil2, ".bmp")
+    ) %>%
+    select(Category, Target, Foil1, Foil2, DI_1, DI_2, TargetPath, Foil1Path, Foil2Path)
+  
+  return(presentable_table)
+}
+
+# Apply the function to your selected triplets
+presentable_stimuli_table <- create_presentable_table(selected_triplets)
+
+# Print the presentable table
+print(presentable_stimuli_table)
+
+# Function to read and convert images to grobs for ggplot
+image_grob <- function(image_path) {
+  img <- image_read(image_path)
+  rasterGrob(as.raster(img), interpolate = TRUE)
+}
+
+# Create the plot for each row in the data frame
+plot_list <- list()
+
+for (i in 1:nrow(presentable_stimuli_table)) {
+  row_data <- presentable_stimuli_table[i, ]
+  
+  # Read the images
+  target_grob <- image_grob(row_data$TargetPath)
+  foil1_grob <- image_grob(row_data$Foil1Path)
+  foil2_grob <- image_grob(row_data$Foil2Path)
+  
+  # Create the plot
+  plot <- grid.arrange(
+    arrangeGrob(target_grob, top = paste(row_data$Category, toupper("\nTarget"), "\n",row_data$Target)),
+    arrangeGrob(foil1_grob, top = paste("\n", toupper("Foil 1"), "\n", row_data$Foil1, "DI:", row_data$DI_1)),
+    arrangeGrob(foil2_grob, top = paste("\n", toupper("Foil 2"), "\n",  row_data$Foil2, "DI:", row_data$DI_2)),
+    ncol = 3
+  )
+  
+  plot_list[[i]] <- plot
+}
+
+# Arrange plots in a grid
+#do.call(grid.arrange, c(plot_list, ncol = 1))
+```
+
+
+## Perceptual {.tabset .tabset-fade}
